@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Race Timeline — Hydra</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0f1117; color: #c9d1d9; font-family: 'JetBrains Mono', 'Fira Code', monospace; padding: 24px; }
+
+  .header { margin-bottom: 24px; }
+  .header h1 { font-size: 18px; color: #58a6ff; margin-bottom: 8px; }
+  .header .hash { font-size: 12px; color: #484f58; }
+  .header .meta { display: flex; gap: 24px; margin-top: 12px; font-size: 13px; }
+  .header .meta .item { display: flex; flex-direction: column; gap: 2px; }
+  .header .meta .label { color: #484f58; font-size: 11px; text-transform: uppercase; }
+  .header .meta .value { color: #c9d1d9; }
+  .header .meta .value.bad { color: #f85149; }
+  .header .meta .value.good { color: #3fb950; }
+
+  .chart-container {
+    background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+    padding: 24px; margin-bottom: 24px; position: relative;
+  }
+  .chart-title { font-size: 13px; color: #8b949e; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }
+
+  /* SVG chart */
+  svg { width: 100%; overflow: visible; }
+  .grid-line { stroke: #21262d; stroke-width: 1; }
+  .grid-label { fill: #484f58; font-size: 11px; font-family: inherit; }
+  .axis-label { fill: #8b949e; font-size: 11px; font-family: inherit; }
+
+  .line-us { stroke: #58a6ff; stroke-width: 2.5; fill: none; }
+  .line-comp-a { stroke: #f85149; stroke-width: 2; fill: none; stroke-dasharray: 6 3; }
+  .line-comp-b { stroke: #d2a8ff; stroke-width: 2; fill: none; stroke-dasharray: 6 3; }
+  .line-dlrate { stroke: #3fb950; stroke-width: 1.5; fill: none; opacity: 0.7; }
+  .area-dlrate { fill: url(#dlrateGrad); opacity: 0.3; }
+
+  .event-marker { cursor: pointer; }
+  .event-marker circle { transition: r 0.15s; }
+  .event-marker:hover circle { r: 6; }
+
+  .legend { display: flex; gap: 20px; margin-top: 16px; font-size: 12px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 16px; height: 3px; border-radius: 2px; }
+  .legend-swatch.dashed { background: repeating-linear-gradient(90deg, currentColor 0 6px, transparent 6px 9px); height: 2px; }
+
+  /* Peer table */
+  .peers-section { margin-top: 24px; }
+  .peer-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .peer-table th {
+    text-align: left; padding: 8px 12px; color: #484f58; font-weight: 500;
+    text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;
+    border-bottom: 1px solid #21262d;
+  }
+  .peer-table td { padding: 8px 12px; border-bottom: 1px solid #161b22; }
+  .peer-table tr:hover td { background: #1c2128; }
+  .peer-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px;
+    font-weight: 600; margin-left: 4px;
+  }
+  .tag-seed { background: #1b3a2d; color: #3fb950; }
+  .tag-fast { background: #2d1b1b; color: #f85149; }
+  .tag-us { background: #1b2a3a; color: #58a6ff; }
+
+  .speed-bar {
+    height: 4px; border-radius: 2px; background: #21262d; position: relative;
+    width: 80px; display: inline-block; vertical-align: middle; margin-right: 8px;
+  }
+  .speed-bar-fill { height: 100%; border-radius: 2px; background: #58a6ff; }
+
+  /* Events log */
+  .events-log { margin-top: 24px; }
+  .event-row {
+    display: flex; gap: 16px; padding: 6px 0; font-size: 12px;
+    border-left: 2px solid #21262d; padding-left: 12px; margin-left: 8px;
+  }
+  .event-row.highlight { border-left-color: #f85149; }
+  .event-time { color: #484f58; min-width: 60px; }
+  .event-icon { min-width: 20px; text-align: center; }
+  .event-text { color: #c9d1d9; }
+  .event-text .dim { color: #484f58; }
+
+  /* Result banner */
+  .result-banner {
+    background: linear-gradient(135deg, #1b1520 0%, #21161b 100%);
+    border: 1px solid #3d2230; border-radius: 8px;
+    padding: 16px 24px; margin-bottom: 24px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .result-position { font-size: 32px; font-weight: 700; color: #f85149; }
+  .result-position span { font-size: 14px; color: #484f58; font-weight: 400; }
+  .result-detail { text-align: right; font-size: 13px; }
+  .result-detail .lost-by { color: #f85149; }
+
+  /* Tooltip */
+  .tooltip {
+    display: none; position: absolute; background: #1c2128; border: 1px solid #30363d;
+    border-radius: 6px; padding: 10px 14px; font-size: 11px; pointer-events: none;
+    z-index: 10; min-width: 180px;
+  }
+  .tooltip .tt-time { color: #58a6ff; margin-bottom: 4px; }
+  .tooltip .tt-row { display: flex; justify-content: space-between; gap: 16px; padding: 1px 0; }
+  .tooltip .tt-label { color: #484f58; }
+  .tooltip .tt-val { color: #c9d1d9; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Race Timeline</h1>
+  <div class="hash">69c04cc44fbac4e89c5f8956dc414dbf45099216</div>
+  <div class="meta">
+    <div class="item">
+      <span class="label">Torrent</span>
+      <span class="value">Some.Release.2026.2160p.BluRay.REMUX.mkv</span>
+    </div>
+    <div class="item">
+      <span class="label">Size</span>
+      <span class="value">42.8 GB</span>
+    </div>
+    <div class="item">
+      <span class="label">Duration</span>
+      <span class="value bad">10m30s</span>
+    </div>
+    <div class="item">
+      <span class="label">Winner</span>
+      <span class="value bad">1m30s (Comp. A)</span>
+    </div>
+    <div class="item">
+      <span class="label">Avg DL</span>
+      <span class="value">68 MB/s</span>
+    </div>
+    <div class="item">
+      <span class="label">Category</span>
+      <span class="value">movies</span>
+    </div>
+  </div>
+</div>
+
+<div class="result-banner">
+  <div>
+    <div class="result-position">2nd <span>/ 3 leechers</span></div>
+  </div>
+  <div class="result-detail">
+    <div class="lost-by">Lost by 8m54s</div>
+    <div style="color: #484f58; margin-top: 2px;">Winner DL'd 7.1× faster</div>
+  </div>
+</div>
+
+<!-- Race progress chart -->
+<div class="chart-container">
+  <div class="chart-title">Race Progress</div>
+  <div class="tooltip" id="tooltip"></div>
+  <svg viewBox="0 0 800 300" id="raceChart">
+    <defs>
+      <linearGradient id="dlrateGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#3fb950" stop-opacity="0.4"/>
+        <stop offset="100%" stop-color="#3fb950" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+
+    <!-- Grid -->
+    <line x1="60" y1="20" x2="60" y2="260" class="grid-line"/>
+    <line x1="60" y1="260" x2="780" y2="260" class="grid-line"/>
+
+    <!-- Y axis labels (progress) -->
+    <text x="50" y="264" class="grid-label" text-anchor="end">0%</text>
+    <text x="50" y="204" class="grid-label" text-anchor="end">25%</text>
+    <text x="50" y="144" class="grid-label" text-anchor="end">50%</text>
+    <text x="50" y="84" class="grid-label" text-anchor="end">75%</text>
+    <text x="50" y="24" class="grid-label" text-anchor="end">100%</text>
+    <line x1="60" y1="200" x2="780" y2="200" class="grid-line" stroke-dasharray="3 3"/>
+    <line x1="60" y1="140" x2="780" y2="140" class="grid-line" stroke-dasharray="3 3"/>
+    <line x1="60" y1="80" x2="780" y2="80" class="grid-line" stroke-dasharray="3 3"/>
+    <line x1="60" y1="20" x2="780" y2="20" class="grid-line" stroke-dasharray="3 3"/>
+
+    <!-- X axis labels (time) -->
+    <text x="60" y="280" class="grid-label" text-anchor="middle">7:34</text>
+    <text x="168" y="280" class="grid-label" text-anchor="middle">8:00</text>
+    <text x="348" y="280" class="grid-label" text-anchor="middle">9:00</text>
+    <text x="528" y="280" class="grid-label" text-anchor="middle">10:00</text>
+    <text x="708" y="280" class="grid-label" text-anchor="middle">11:00</text>
+    <text x="420" y="298" class="axis-label" text-anchor="middle">Time since torrent added</text>
+
+    <!-- Vertical markers for events -->
+    <line x1="68" y1="20" x2="68" y2="260" stroke="#21262d" stroke-width="1" stroke-dasharray="2 4"/>
+    <text x="68" y="14" class="grid-label" text-anchor="middle" fill="#484f58" font-size="9">+6s peers</text>
+
+    <line x1="355" y1="20" x2="355" y2="260" stroke="#f8514933" stroke-width="1" stroke-dasharray="2 4"/>
+    <text x="355" y="14" class="grid-label" text-anchor="middle" fill="#f85149" font-size="9">A wins</text>
+
+    <!-- Competitor A progress (fast seedbox) -->
+    <polyline class="line-comp-a" points="
+      68,260
+      100,220
+      140,170
+      180,120
+      220,80
+      260,50
+      300,30
+      340,22
+      355,20
+    "/>
+
+    <!-- Competitor B progress (slightly slower) -->
+    <polyline class="line-comp-b" points="
+      68,260
+      100,245
+      140,228
+      180,210
+      220,192
+      260,175
+      300,158
+      340,142
+      380,125
+      420,108
+      460,92
+      500,78
+      540,62
+      580,48
+      620,35
+      660,24
+      700,20
+    "/>
+
+    <!-- Our progress (slow, via WG tunnel) -->
+    <polyline class="line-us" points="
+      60,260
+      68,258
+      100,250
+      140,238
+      180,225
+      220,212
+      260,200
+      300,187
+      340,175
+      380,162
+      420,150
+      460,138
+      480,131
+      520,118
+      560,105
+      600,92
+      640,78
+      680,62
+      720,45
+      755,20
+    "/>
+
+    <!-- DL rate area (our speed) -->
+    <path class="area-dlrate" d="
+      M60,260
+      L68,180 L100,200 L140,210 L180,215 L220,210 L260,210
+      L300,215 L340,210 L380,215 L420,210 L460,215 L480,210
+      L520,210 L560,215 L600,210 L640,205 L680,200 L720,210 L755,260
+      Z
+    "/>
+    <polyline class="line-dlrate" points="
+      60,260
+      68,180
+      100,200
+      140,210
+      180,215
+      220,210
+      260,210
+      300,215
+      340,210
+      380,215
+      420,210
+      460,215
+      480,210
+      520,210
+      560,215
+      600,210
+      640,205
+      680,200
+      720,210
+    "/>
+
+    <!-- Event markers -->
+    <g class="event-marker">
+      <circle cx="60" cy="260" r="4" fill="#58a6ff"/>
+      <text x="60" y="252" class="grid-label" text-anchor="middle" fill="#58a6ff" font-size="9">seed</text>
+    </g>
+    <g class="event-marker">
+      <circle cx="355" cy="20" r="4" fill="#f85149"/>
+    </g>
+    <g class="event-marker">
+      <circle cx="755" cy="20" r="4" fill="#58a6ff"/>
+      <text x="755" y="14" class="grid-label" text-anchor="middle" fill="#58a6ff" font-size="9">us</text>
+    </g>
+    <g class="event-marker">
+      <circle cx="700" cy="20" r="4" fill="#d2a8ff"/>
+      <text x="700" y="14" class="grid-label" text-anchor="middle" fill="#d2a8ff" font-size="9">B</text>
+    </g>
+
+    <!-- Right Y axis label (DL rate) -->
+    <text x="795" y="180" class="grid-label" text-anchor="start" fill="#3fb950" font-size="10" transform="rotate(90,795,180)">DL Rate</text>
+  </svg>
+
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-swatch" style="background: #58a6ff;"></div>
+      <span>Us (Hydra)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch dashed" style="color: #f85149;"></div>
+      <span style="color: #f85149;">Competitor A (winner)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch dashed" style="color: #d2a8ff;"></div>
+      <span style="color: #d2a8ff;">Competitor B</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background: #3fb950;"></div>
+      <span style="color: #3fb950;">Our DL rate</span>
+    </div>
+  </div>
+</div>
+
+<!-- DL speed per peer chart -->
+<div class="chart-container">
+  <div class="chart-title">Download Speed by Source Peer</div>
+  <svg viewBox="0 0 800 200">
+    <!-- Stacked area showing which peer gives us bandwidth -->
+    <defs>
+      <linearGradient id="seedGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#f0883e" stop-opacity="0.6"/>
+        <stop offset="100%" stop-color="#f0883e" stop-opacity="0.1"/>
+      </linearGradient>
+      <linearGradient id="compAGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#f85149" stop-opacity="0.4"/>
+        <stop offset="100%" stop-color="#f85149" stop-opacity="0.05"/>
+      </linearGradient>
+      <linearGradient id="compBGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#d2a8ff" stop-opacity="0.4"/>
+        <stop offset="100%" stop-color="#d2a8ff" stop-opacity="0.05"/>
+      </linearGradient>
+    </defs>
+
+    <line x1="60" y1="20" x2="60" y2="170" class="grid-line"/>
+    <line x1="60" y1="170" x2="780" y2="170" class="grid-line"/>
+    <text x="50" y="174" class="grid-label" text-anchor="end">0</text>
+    <text x="50" y="97" class="grid-label" text-anchor="end">50 MB/s</text>
+    <text x="50" y="24" class="grid-label" text-anchor="end">100 MB/s</text>
+    <line x1="60" y1="95" x2="780" y2="95" class="grid-line" stroke-dasharray="3 3"/>
+
+    <!-- Seed contribution (orange) - main source -->
+    <path fill="url(#seedGrad)" stroke="#f0883e" stroke-width="1.5" d="
+      M60,170
+      L68,60 L100,80 L140,90 L180,95 L220,90 L260,92
+      L300,95 L340,90 L380,95 L420,92 L460,95 L500,90
+      L540,95 L580,90 L600,92 L640,88 L680,85 L720,92 L755,170
+      Z
+    "/>
+
+    <!-- Comp A contribution (red) - minimal, they're downloading too -->
+    <path fill="url(#compAGrad)" stroke="#f85149" stroke-width="1" d="
+      M68,170
+      L100,160 L140,155 L180,150 L220,148 L260,145
+      L300,148 L340,150 L355,170
+      Z
+    "/>
+
+    <!-- Comp B contribution (purple) -->
+    <path fill="url(#compBGrad)" stroke="#d2a8ff" stroke-width="1" d="
+      M68,170
+      L100,165 L140,162 L180,160 L220,158 L260,160
+      L300,162 L340,160 L380,158 L420,160 L460,162
+      L500,158 L540,155 L580,158 L620,155 L660,158 L700,170
+      Z
+    "/>
+
+    <text x="200" y="80" fill="#f0883e" font-size="11" font-family="inherit" opacity="0.8">seed (91.108.x.x)</text>
+    <text x="150" y="155" fill="#f85149" font-size="10" font-family="inherit" opacity="0.7">comp A</text>
+    <text x="350" y="158" fill="#d2a8ff" font-size="10" font-family="inherit" opacity="0.7">comp B</text>
+  </svg>
+
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-swatch" style="background: #f0883e;"></div>
+      <span style="color: #f0883e;">Seed (91.108.x.x) — rtorrent/0.9.8</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background: #f85149;"></div>
+      <span style="color: #f85149;">Comp A (185.21.x.x) — libtorrent/2.0</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background: #d2a8ff;"></div>
+      <span style="color: #d2a8ff;">Comp B (94.130.x.x) — qBittorrent/4.6</span>
+    </div>
+  </div>
+</div>
+
+<!-- Peer details table -->
+<div class="chart-container">
+  <div class="chart-title">Peer Snapshot at peak (T+45s)</div>
+  <table class="peer-table">
+    <thead>
+      <tr>
+        <th>Peer</th>
+        <th>Client</th>
+        <th>DL from</th>
+        <th>UL to</th>
+        <th>Progress</th>
+        <th>Flags</th>
+        <th>Connected</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>91.108.x.x:43210 <span class="peer-tag tag-seed">SEED</span></td>
+        <td>rtorrent/0.9.8</td>
+        <td>
+          <div class="speed-bar"><div class="speed-bar-fill" style="width: 65%; background: #f0883e;"></div></div>
+          65.2 MB/s
+        </td>
+        <td style="color: #484f58;">0</td>
+        <td>100%</td>
+        <td style="color: #3fb950;">D E</td>
+        <td>52s</td>
+      </tr>
+      <tr>
+        <td>185.21.x.x:6881 <span class="peer-tag tag-fast">FAST</span></td>
+        <td>libtorrent/2.0.9</td>
+        <td>
+          <div class="speed-bar"><div class="speed-bar-fill" style="width: 12%; background: #f85149;"></div></div>
+          12.1 MB/s
+        </td>
+        <td>
+          <div class="speed-bar"><div class="speed-bar-fill" style="width: 8%; background: #58a6ff;"></div></div>
+          8.4 MB/s
+        </td>
+        <td style="color: #f85149;">67% ▲</td>
+        <td style="color: #3fb950;">D I E</td>
+        <td>45s</td>
+      </tr>
+      <tr>
+        <td>94.130.x.x:51413 </td>
+        <td>qBittorrent/4.6.3</td>
+        <td>
+          <div class="speed-bar"><div class="speed-bar-fill" style="width: 5%; background: #d2a8ff;"></div></div>
+          5.3 MB/s
+        </td>
+        <td>
+          <div class="speed-bar"><div class="speed-bar-fill" style="width: 6%; background: #58a6ff;"></div></div>
+          6.1 MB/s
+        </td>
+        <td>22%</td>
+        <td style="color: #3fb950;">D I E</td>
+        <td>44s</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Event timeline log -->
+<div class="chart-container">
+  <div class="chart-title">Event Log</div>
+  <div class="events-log">
+    <div class="event-row">
+      <span class="event-time">+0s</span>
+      <span class="event-icon">🟢</span>
+      <span class="event-text">Race started — added to engine <span class="dim">(0 peers)</span></span>
+    </div>
+    <div class="event-row">
+      <span class="event-time">+7m34</span>
+      <span class="event-icon">👤</span>
+      <span class="event-text">First peer — seed connected <span class="dim">91.108.x.x rtorrent/0.9.8</span></span>
+    </div>
+    <div class="event-row">
+      <span class="event-time">+7m40</span>
+      <span class="event-icon">👥</span>
+      <span class="event-text">Swarm change — 2 leechers joined <span class="dim">(1S/2L → 1S/3L)</span></span>
+    </div>
+    <div class="event-row">
+      <span class="event-time">+7m45</span>
+      <span class="event-icon">⚡</span>
+      <span class="event-text">First download — peak 92 MB/s from seed <span class="dim">(seed unchoked us)</span></span>
+    </div>
+    <div class="event-row">
+      <span class="event-time">+7m50</span>
+      <span class="event-icon">📉</span>
+      <span class="event-text">DL rate dropped 92→65 MB/s <span class="dim">(seed split bandwidth with comp A)</span></span>
+    </div>
+    <div class="event-row highlight">
+      <span class="event-time">+9m10</span>
+      <span class="event-icon">🏁</span>
+      <span class="event-text" style="color: #f85149;">Competitor A finished — 185.21.x.x completed in 1m30s <span class="dim">(progress 100%, became seed)</span></span>
+    </div>
+    <div class="event-row">
+      <span class="event-time">+9m12</span>
+      <span class="event-icon">📈</span>
+      <span class="event-text">DL rate increased — now 2 seeds uploading to us <span class="dim">(65→78 MB/s)</span></span>
+    </div>
+    <div class="event-row">
+      <span class="event-time">+14m20</span>
+      <span class="event-icon">🏁</span>
+      <span class="event-text" style="color: #d2a8ff;">Competitor B finished — 94.130.x.x completed <span class="dim">(progress 100%)</span></span>
+    </div>
+    <div class="event-row">
+      <span class="event-time">+18m04</span>
+      <span class="event-icon">✅</span>
+      <span class="event-text" style="color: #58a6ff;">Race completed — 2nd place, 10m30s download time</span>
+    </div>
+  </div>
+</div>
+
+<!-- Analysis box -->
+<div class="chart-container" style="border-color: #30363d;">
+  <div class="chart-title">Race Analysis</div>
+  <div style="font-size: 13px; line-height: 1.8;">
+    <div style="margin-bottom: 12px;">
+      <strong style="color: #f0883e;">Why we lost:</strong>
+      <div style="margin-left: 16px; color: #8b949e;">
+        Competitor A (185.21.x.x, libtorrent/2.0) downloaded at ~475 MB/s from seed vs our ~65 MB/s.<br>
+        Likely same datacenter as seed (both OVH/Hetzner range). RTT advantage → TCP fills pipe faster.
+      </div>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <strong style="color: #58a6ff;">Our performance:</strong>
+      <div style="margin-left: 16px; color: #8b949e;">
+        Avg DL rate: 68 MB/s — consistent with WG tunnel throughput ceiling.<br>
+        Seed always unchoked us (flag D present in all snapshots). Not a choking issue.
+      </div>
+    </div>
+    <div>
+      <strong style="color: #3fb950;">Actionable:</strong>
+      <div style="margin-left: 16px; color: #8b949e;">
+        VPN exit in same DC as seed would have matched competitor A's speed.<br>
+        Peer Intel: 185.21.x.x seen in 12 previous races, wins 83% of the time → known seedbox.
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
