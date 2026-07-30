@@ -49,7 +49,7 @@ async function fetchPublicIp() {
             // Leak detection: any IP that is NOT our home WAN means we're
             // properly behind a tunnel. Avoids hardcoding takehost IPs which
             // change when DPI bans hit and we rotate to a new VPS IP.
-            const homeWanIPs = ["82.66.118.68"];
+            const homeWanIPs = ["86.196.105.98", "82.66.118.68"];
             const el = document.getElementById("tunnel-info");
             const dot = document.getElementById("health-dot");
             if (!homeWanIPs.includes(d.ip)) {
