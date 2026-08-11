@@ -183,7 +183,22 @@ func (b *BenchDB) Open() error {
 		return err
 	}
 
-	dsn, netFS := sqlitex.DSN(b.path, "")
+	// Whether the file already exists decides if INCREMENTAL auto_vacuum can be
+	// enabled in place (it only takes effect when set before any table is
+	// created) or whether a legacy database needs a one-time offline VACUUM to
+	// convert. Checked before we open (sql.Open is lazy and does not touch it).
+	_, statErr := os.Stat(b.path)
+	preexisting := statErr == nil
+
+	// auto_vacuum(incremental) is set through the DSN so it is applied on the
+	// connection that first creates the tables. It only takes effect when set
+	// before any table exists, and a per-connection PRAGMA Exec can race the
+	// pool and land on a different connection, so the DSN (applied on every
+	// connection open) is the reliable place for it. It lets ReclaimSpace hand
+	// pruned pages back to the filesystem without a full-file rewrite. On a
+	// database created without it, it is a silent no-op: freed pages are reused
+	// (growth stops) but the file shrinks only after a one-time offline VACUUM.
+	dsn, netFS := sqlitex.DSN(b.path, "&_pragma=auto_vacuum(incremental)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return err
@@ -237,6 +252,18 @@ func (b *BenchDB) Open() error {
 	db.Exec("PRAGMA journal_mode=WAL")
 	db.Exec("PRAGMA busy_timeout=5000")
 	db.SetMaxOpenConns(1)
+
+	// Warn once if a legacy database predates auto_vacuum: pruning will bound
+	// growth (freed pages get reused) but the file only shrinks after a manual
+	// offline compaction. In-daemon VACUUM is deliberately avoided — it rewrites
+	// the whole file and needs ~its size in free space, exactly what a
+	// disk-fill victim does not have.
+	if preexisting {
+		var av int
+		if db.QueryRow("PRAGMA auto_vacuum").Scan(&av) == nil && av == 0 {
+			slog.Warn("bench_db: legacy database without auto_vacuum; pruning bounds growth but the file shrinks only after a one-time offline compaction — stop hydra, then: sqlite3 <path> 'PRAGMA auto_vacuum=INCREMENTAL; VACUUM;'", "path", b.path)
+		}
+	}
 
 	b.conn = db
 
@@ -316,7 +343,11 @@ func (b *BenchDB) Insert(snap map[string]interface{}) {
 	b.conn.Exec(sqlStr, vals...)
 }
 
-// PurgeOld removes entries older than 30 days.
+// PurgeOld removes the low-cardinality time series (global samples, VPN tests,
+// lifecycle events, per-tracker rollups) older than RetentionDays. These do not
+// scale with the number of torrents, so a long window stays cheap. The
+// high-cardinality per-torrent race_snapshots series is bounded separately by
+// PurgeSnapshots on the much shorter, configurable BenchConfig.RetentionHours.
 func (b *BenchDB) PurgeOld() {
 	cutoff := float64(time.Now().Unix()) - retentionSecs
 	b.mu.Lock()
@@ -327,8 +358,47 @@ func (b *BenchDB) PurgeOld() {
 	b.conn.Exec("DELETE FROM bench_samples WHERE ts < ?", cutoff)
 	b.conn.Exec("DELETE FROM vpn_speedtest WHERE ts < ?", cutoff)
 	b.conn.Exec("DELETE FROM race_events WHERE ts < ?", cutoff)
-	b.conn.Exec("DELETE FROM race_snapshots WHERE ts < ?", cutoff)
 	b.conn.Exec("DELETE FROM tracker_samples WHERE ts < ?", cutoff)
+}
+
+// PurgeSnapshots removes per-torrent race_snapshots rows older than
+// retentionHours. This is the only bench table whose row count scales with the
+// fleet (one row per active race torrent per snapshot tick), so it is pruned on
+// a short, operator-tunable window instead of the year-long PurgeOld window.
+// retentionHours <= 0 keeps the series forever (explicit opt-out of pruning).
+func (b *BenchDB) PurgeSnapshots(retentionHours int) {
+	if retentionHours <= 0 {
+		return
+	}
+	cutoff := float64(time.Now().Unix()) - float64(retentionHours)*3600
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn == nil {
+		return
+	}
+	b.conn.Exec("DELETE FROM race_snapshots WHERE ts < ?", cutoff)
+}
+
+// ReclaimSpace returns pages freed by pruning to the filesystem. It is cheap and
+// incremental, and a no-op unless the database was created with INCREMENTAL
+// auto_vacuum (see Open). It never rewrites the whole file, so it is safe to run
+// on a live database and on a nearly-full disk.
+func (b *BenchDB) ReclaimSpace() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn == nil {
+		return
+	}
+	// incremental_vacuum frees one page per step. On the modernc/database-sql
+	// Exec path a PRAGMA is stepped only once (one page), so run it as a query
+	// and drain the result set to reclaim the entire freelist in one call.
+	rows, err := b.conn.Query("PRAGMA incremental_vacuum")
+	if err != nil {
+		return
+	}
+	for rows.Next() {
+	}
+	rows.Close()
 }
 
 // InsertVpn stores a VPN speed test result.

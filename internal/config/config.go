@@ -106,6 +106,34 @@ type RaceDrainConfig struct {
 	ReserveFreeGB   int  `toml:"reserve_free_gb"`
 }
 
+// BenchConfig — benchmark/metrics store (bench.db) sampling and retention.
+//
+// The per-torrent race_snapshots time series is the only table whose row count
+// grows with the fleet size (one row per active race torrent at every snapshot
+// tick). Left unbounded it dominates bench.db — at tens of thousands of race
+// torrents it writes hundreds of MB/hour and there was previously no way to
+// cap it. This section bounds it: SnapshotIntervalSecs throttles how often the
+// series is written, RetentionHours is the sliding window a background task
+// prunes to, and Vacuum returns the freed pages to the filesystem so the file
+// actually shrinks. PerTorrentSnapshots is a hard off-switch for the series;
+// Enabled is a hard off-switch for the whole sampler.
+//
+// Sizing rule of thumb for the steady-state on-disk size of race_snapshots:
+//
+//	bytes ≈ active_race_torrents / SnapshotIntervalSecs * 3600 * RetentionHours * ~80
+//
+// Lower RetentionHours (or raise SnapshotIntervalSecs) on very large fleets; or
+// set PerTorrentSnapshots=false to drop the per-torrent series entirely while
+// keeping the cheap global bench_samples/tracker_samples series.
+type BenchConfig struct {
+	Enabled              bool `toml:"enabled"`                // run the periodic bench sampler at all
+	SnapshotIntervalSecs int  `toml:"snapshot_interval_secs"` // cadence of per-torrent race_snapshots writes (<=0 → default)
+	RetentionHours       int  `toml:"retention_hours"`        // prune race_snapshots older than this; 0 = keep forever
+	PruneIntervalMins    int  `toml:"prune_interval_mins"`    // how often the prune + reclaim task runs (<=0 → default)
+	Vacuum               bool `toml:"vacuum"`                 // reclaim pruned pages to the OS (INCREMENTAL auto_vacuum)
+	PerTorrentSnapshots  bool `toml:"per_torrent_snapshots"`  // write the high-cardinality race_snapshots series at all
+}
+
 // NotifyConfig — Discord webhook notification settings.
 type NotifyConfig struct {
 	Enabled    bool   `toml:"enabled"`
@@ -174,6 +202,7 @@ type HydraConfig struct {
 	ArrCleanup   ArrCleanupConfig   `toml:"arr_cleanup"`
 	VpnSpeedtest VpnSpeedtestConfig `toml:"vpn_speedtest"`
 	RaceDrain    RaceDrainConfig    `toml:"race_drain"`
+	Bench        BenchConfig        `toml:"bench"`
 	Notify       NotifyConfig       `toml:"notify"`
 	Proxy        ProxyConfig        `toml:"proxy"`
 	Auth         AuthConfig         `toml:"auth"`
@@ -264,6 +293,14 @@ func DefaultConfig() *HydraConfig {
 			AddBlockEnabled:      true,
 			ReserveFreeGB:        0,
 		},
+		Bench: BenchConfig{
+			Enabled:              true,
+			SnapshotIntervalSecs: 15,
+			RetentionHours:       24,
+			PruneIntervalMins:    30,
+			Vacuum:               true,
+			PerTorrentSnapshots:  true,
+		},
 	}
 }
 
@@ -287,6 +324,12 @@ var migrationKeys = []struct{ section, key, value string }{
 	{"race_drain", "age_ratio_action", `"delete"`},
 	{"race_drain", "add_block_enabled", `true`},
 	{"race_drain", "reserve_free_gb", `0`},
+	{"bench", "enabled", `true`},
+	{"bench", "snapshot_interval_secs", `15`},
+	{"bench", "retention_hours", `24`},
+	{"bench", "prune_interval_mins", `30`},
+	{"bench", "vacuum", `true`},
+	{"bench", "per_torrent_snapshots", `true`},
 }
 
 // ensureConfigKeys appends any missing migrationKeys to the TOML file in place.

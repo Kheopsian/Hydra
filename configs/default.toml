@@ -75,6 +75,24 @@ low_watermark_pct = 85
 race_path = "/race"
 min_age_minutes = 10
 
+# ─────────────────────────────────────────────
+# BENCH - metrics store (bench.db) sampling & retention
+# ─────────────────────────────────────────────
+# The per-torrent race_snapshots series is the only bench table that grows with
+# fleet size (one row per active race torrent per tick). On large fleets it is
+# the dominant writer, so it is bounded here. Steady-state on-disk size ≈
+#   active_race_torrents / snapshot_interval_secs * 3600 * retention_hours * ~80 bytes
+# Lower retention_hours or raise snapshot_interval_secs on very large fleets,
+# or set per_torrent_snapshots = false to drop the series entirely (the cheap
+# global bench_samples / tracker_samples series are kept either way).
+[bench]
+enabled = true                 # false = no bench sampling at all
+snapshot_interval_secs = 15    # how often the per-torrent snapshots are written
+retention_hours = 24           # prune race_snapshots older than this; 0 = keep forever
+prune_interval_mins = 30       # how often the prune + space-reclaim task runs
+vacuum = true                  # return pruned pages to the filesystem (incremental auto_vacuum)
+per_torrent_snapshots = true   # false = skip race_snapshots, keep only global series
+
 # Optional per-tracker announce passkey override (host substring -> passkey).
 # Hot-swap via POST /api/announce/passkeys. Ships empty.
 # [announce_passkeys]

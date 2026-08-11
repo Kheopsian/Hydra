@@ -942,56 +942,83 @@ func main() {
 		}
 	}()
 
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				snap := collectBenchSnapshot(raceEngine, hoardEngine)
-				benchDB.Insert(snap)
-				benchDB.InsertTrackerSamples(collectTrackerSamples(raceEngine, hoardEngine))
+	// Bench sampler + retention knobs (see [bench] in the config).
+	benchCfg := cfg.Bench
+	snapIntervalSecs := benchCfg.SnapshotIntervalSecs
+	if snapIntervalSecs <= 0 {
+		snapIntervalSecs = 15
+	}
+	pruneEveryMins := benchCfg.PruneIntervalMins
+	if pruneEveryMins <= 0 {
+		pruneEveryMins = 30
+	}
 
-				raceTorrents := raceEngine.GetTorrentList()
-				now := float64(time.Now().Unix())
-				var snapshots []bench.RaceSnapshot
-				activeHashes := make(map[string]struct{}, len(raceTorrents))
-				for _, t := range raceTorrents {
-					isActive := t.DownloadRate > 0 || t.UploadRate > 0 || t.NumPeers > 0 || t.Progress < 1.0
-					if !isActive {
+	if benchCfg.Enabled {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			var lastSnap float64 // unix seconds of the last race_snapshots write
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					snap := collectBenchSnapshot(raceEngine, hoardEngine)
+					benchDB.Insert(snap)
+					benchDB.InsertTrackerSamples(collectTrackerSamples(raceEngine, hoardEngine))
+
+					// The per-torrent race_snapshots series is the only writer
+					// that scales with the fleet, so throttle it to
+					// snapshot_interval_secs (independent of the 5s global
+					// sampler) and let it be switched off entirely.
+					now := float64(time.Now().Unix())
+					if !benchCfg.PerTorrentSnapshots || now-lastSnap < float64(snapIntervalSecs) {
 						continue
 					}
-					activeHashes[t.InfoHash] = struct{}{}
-					peersJSON := "[]"
-					if t.Progress < 1.0 && t.NumPeers > 0 {
-						peers := raceEngine.GetPeersForTorrent(t.InfoHash)
-						if len(peers) > 0 {
-							peerRates.enrichRates(t.InfoHash, peers, now)
-							peersJSON = collectPeersJSON(peers)
-						}
-					}
-					snapshots = append(snapshots, bench.RaceSnapshot{
-						Ts: now, InfoHash: t.InfoHash,
-						Progress: t.Progress, UploadRate: float64(t.UploadRate),
-						DownloadRate: float64(t.DownloadRate),
-						TotalUpload:  t.TotalUpload, TotalDownload: t.TotalDownload,
-						Peers: t.NumPeers, Seeds: t.NumSeeds,
-						SwarmSeeds: t.SwarmSeeds, SwarmLeechers: t.SwarmLeechers,
-						Ratio: t.Ratio, PeersJSON: peersJSON,
-					})
-				}
-				if len(snapshots) > 0 {
-					benchDB.InsertRaceSnapshots(snapshots)
-				}
-				peerRates.purgeInactive(activeHashes)
-			}
-		}
-	}()
+					lastSnap = now
 
+					raceTorrents := raceEngine.GetTorrentList()
+					var snapshots []bench.RaceSnapshot
+					activeHashes := make(map[string]struct{}, len(raceTorrents))
+					for _, t := range raceTorrents {
+						isActive := t.DownloadRate > 0 || t.UploadRate > 0 || t.NumPeers > 0 || t.Progress < 1.0
+						if !isActive {
+							continue
+						}
+						activeHashes[t.InfoHash] = struct{}{}
+						peersJSON := "[]"
+						if t.Progress < 1.0 && t.NumPeers > 0 {
+							peers := raceEngine.GetPeersForTorrent(t.InfoHash)
+							if len(peers) > 0 {
+								peerRates.enrichRates(t.InfoHash, peers, now)
+								peersJSON = collectPeersJSON(peers)
+							}
+						}
+						snapshots = append(snapshots, bench.RaceSnapshot{
+							Ts: now, InfoHash: t.InfoHash,
+							Progress: t.Progress, UploadRate: float64(t.UploadRate),
+							DownloadRate: float64(t.DownloadRate),
+							TotalUpload:  t.TotalUpload, TotalDownload: t.TotalDownload,
+							Peers: t.NumPeers, Seeds: t.NumSeeds,
+							SwarmSeeds: t.SwarmSeeds, SwarmLeechers: t.SwarmLeechers,
+							Ratio: t.Ratio, PeersJSON: peersJSON,
+						})
+					}
+					if len(snapshots) > 0 {
+						benchDB.InsertRaceSnapshots(snapshots)
+					}
+					peerRates.purgeInactive(activeHashes)
+				}
+			}
+		}()
+	}
+
+	// Retention: keep the long window for the cheap global tables, and bound the
+	// fleet-scaling race_snapshots series to bench.retention_hours, then hand the
+	// freed pages back to the filesystem. Runs even when the sampler is disabled
+	// so an already-bloated database still drains.
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
+		ticker := time.NewTicker(time.Duration(pruneEveryMins) * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
@@ -999,6 +1026,10 @@ func main() {
 				return
 			case <-ticker.C:
 				benchDB.PurgeOld()
+				benchDB.PurgeSnapshots(benchCfg.RetentionHours)
+				if benchCfg.Vacuum {
+					benchDB.ReclaimSpace()
+				}
 			}
 		}
 	}()
